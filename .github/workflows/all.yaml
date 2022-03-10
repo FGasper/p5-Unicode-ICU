@@ -149,7 +149,7 @@ jobs:
       - name: Get the qemu container
         run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
       - name: Run tests on ${{ matrix.platform }}
-        run: docker run --rm --interactive ${{ matrix.platform }}/ubuntu bash -c "export DEBIAN_FRONTEND=noninteractive; apt update; apt install -y curl perl make git gcc libicu-dev pkg-config 'g++'; git clone --recurse-submodules $GITHUB_SERVER_URL/$GITHUB_REPOSITORY; cd $( echo $GITHUB_REPOSITORY | cut -d/ -f2 ); curl -L https://cpanmin.us | perl - --notest --installdeps --with-configure .; perl Makefile.PL; make; prove -wlvmb t"
+        run: docker run --rm --interactive ${{ matrix.platform }}/ubuntu bash -c "export DEBIAN_FRONTEND=noninteractive; apt update; apt install -y curl perl make git gcc libicu-dev pkg-config 'g++'; git clone --recurse-submodules $GITHUB_SERVER_URL/$GITHUB_REPOSITORY; git checkout $GITHUB_HEAD_REF; cd $( echo $GITHUB_REPOSITORY | cut -d/ -f2 ); curl -L https://cpanmin.us | perl - --notest --installdeps --with-configure .; perl Makefile.PL; make; prove -wlvmb t"
 
   freebsd:
     runs-on: macos-10.15
