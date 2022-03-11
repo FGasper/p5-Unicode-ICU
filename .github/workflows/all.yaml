@@ -200,19 +200,17 @@ jobs:
       - uses: actions/checkout@v3
       - name: Set up Perl
         run: brew install perl${{ matrix.perl-version && '@' || '' }}${{ matrix.perl-version }}
-      - name: perl -V
-        run: perl -V
+      - run: perl${{ matrix.perl-version }} -V
       - name: Install Dependencies
-        run: curl -L https://cpanmin.us | perl - --notest --installdeps --with-develop --with-configure .
-      - name: perl Makefile.PL
-        run: perl Makefile.PL
+        run: curl -L https://cpanmin.us | perl${{ matrix.perl-version }} - --notest --installdeps --with-develop --with-configure .
+      - run: perl${{ matrix.perl-version }} Makefile.PL
         env:
           PKG_CONFIG_PATH: /usr/local/opt/icu4c/lib/pkgconfig
       - name: make
         run: make
       - name: Run tests (no coverage)
         if: ${{ matrix.perl-version }}
-        run: prove -wlvmb t
+        run: make test
       - name: Run tests (with coverage)
         if: ${{ !matrix.perl-version }}
         env:
