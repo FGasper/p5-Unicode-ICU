@@ -201,7 +201,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Set up Perl
-        run: brew install perl${{ matrix.perlversion && "@" || "" }}${{ matrix.perlversion }}
+        run: brew install perl${{ matrix.perlversion && '@' || '' }}${{ matrix.perlversion }}
       - name: perl -V
         run: perl -V
       - name: Install Dependencies
