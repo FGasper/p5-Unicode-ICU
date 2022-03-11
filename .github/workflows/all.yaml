@@ -164,11 +164,9 @@ jobs:
             - '12.2'
             - '13.0'
         - name: openbsd
-          version: '6.9'
           pkginstall: pkg_add icu4c p5-ExtUtils-PkgConfig curl
-#        - name: netbsd
-#          version: '9.2'
-#          pkginstall: pkg_add libunbound
+          version:
+            - '6.9'
 
     steps:
       - uses: actions/checkout@v3
@@ -194,14 +192,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        perlversion:
+        perl-version:
           - ''
           - '5.18'
 
     steps:
       - uses: actions/checkout@v3
       - name: Set up Perl
-        run: brew install perl${{ matrix.perlversion && '@' || '' }}${{ matrix.perlversion }}
+        run: brew install perl${{ matrix.perl-version && '@' || '' }}${{ matrix.perl-version }}
       - name: perl -V
         run: perl -V
       - name: Install Dependencies
@@ -212,7 +210,11 @@ jobs:
           PKG_CONFIG_PATH: /usr/local/opt/icu4c/lib/pkgconfig
       - name: make
         run: make
+      - name: Run tests (no coverage)
+        if: ${{ matrix.perl-version }}
+        run: prove -wlvmb t
       - name: Run tests (with coverage)
+        if: ${{ !matrix.perl-version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
