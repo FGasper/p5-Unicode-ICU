@@ -158,15 +158,18 @@ jobs:
       fail-fast: false
       matrix:
         os:
-        - name: freebsd
-          pkginstall: pkg install -y p5-ExtUtils-PkgConfig curl icu
-          version:
-            - '12.2'
-            - '13.0'
-        - name: openbsd
-          pkginstall: pkg_add icu4c p5-ExtUtils-PkgConfig curl
-          version:
-            - '6.9'
+          - name: freebsd
+            version: '13.0'
+          - name: freebsd
+            version: '12.2'
+          - name: openbsd
+            version: '6.9'
+        include:
+          os:
+            - name: freebsd
+              pkginstall: pkg install -y p5-ExtUtils-PkgConfig curl icu
+            - name: openbsd
+              pkginstall: pkg_add icu4c p5-ExtUtils-PkgConfig curl
 
     steps:
       - uses: actions/checkout@v3
