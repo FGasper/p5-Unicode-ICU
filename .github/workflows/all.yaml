@@ -160,16 +160,13 @@ jobs:
         os:
           - name: freebsd
             version: '13.0'
+            pkginstall: pkg install -y p5-ExtUtils-PkgConfig curl icu
           - name: freebsd
             version: '12.2'
+            pkginstall: pkg install -y p5-ExtUtils-PkgConfig curl icu
           - name: openbsd
             version: '6.9'
-        include:
-          os:
-            - name: freebsd
-              pkginstall: pkg install -y p5-ExtUtils-PkgConfig curl icu
-            - name: openbsd
-              pkginstall: pkg_add icu4c p5-ExtUtils-PkgConfig curl
+            pkginstall: pkg_add icu4c p5-ExtUtils-PkgConfig curl
 
     steps:
       - uses: actions/checkout@v3
