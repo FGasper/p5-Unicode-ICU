@@ -202,7 +202,7 @@ jobs:
         run: brew install perl${{ matrix.perl-version && '@' || '' }}${{ matrix.perl-version }}
       - run: perl${{ matrix.perl-version }} -V
       - name: Install Dependencies
-        run: curl -L https://cpanmin.us | perl${{ matrix.perl-version }} - --notest --installdeps --with-develop --with-configure .
+        run: curl -L https://cpanmin.us | perl${{ matrix.perl-version }} - --sudo --notest --installdeps --with-develop --with-configure .
       - run: perl${{ matrix.perl-version }} Makefile.PL
         env:
           PKG_CONFIG_PATH: /usr/local/opt/icu4c/lib/pkgconfig
