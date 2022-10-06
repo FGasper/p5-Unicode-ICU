@@ -516,7 +516,8 @@ void __handle_uerr_with_parseError(pTHX_
 static UResourceBundle* __resolve_rb_path(pTHX_
     UResourceBundle* root_rb,
     unsigned pathlen,
-    SV** path
+    SV** path,
+    bool ignore_missing_final
 ) {
     dMARK;
     dAX;
@@ -539,6 +540,11 @@ static UResourceBundle* __resolve_rb_path(pTHX_
 
                 if (U_FAILURE(err)) {
                     if (ret_rb_p) ures_close(ret_rb_p);
+
+                    if (ignore_missing_final && (err == U_MISSING_RESOURCE_ERROR)) {
+                        if (i == (pathlen-1)) return NULL;
+                    }
+
                     _handle_uerr(err, "ures_getByKey", NULL);
                 }
             } break;
@@ -550,6 +556,11 @@ static UResourceBundle* __resolve_rb_path(pTHX_
 
                 if (U_FAILURE(err)) {
                     if (ret_rb_p) ures_close(ret_rb_p);
+
+                    if (ignore_missing_final && (err == U_MISSING_RESOURCE_ERROR)) {
+                        if (i == (pathlen-1)) return NULL;
+                    }
+
                     _handle_uerr(err, "ures_getByIndex", NULL);
                 }
             } break;
@@ -672,7 +683,8 @@ get_keys (SV* self_sv, ...)
         UResourceBundle* cur_rb_p = __resolve_rb_path( aTHX_
             rb_p,
             items - 1,
-            &ST(1)
+            &ST(1),
+            false
         );
 
         bool cur_rb_is_temp = (rb_p != cur_rb_p);
@@ -718,81 +730,87 @@ get (SV* self_sv, ...)
         UResourceBundle* cur_rb_p = __resolve_rb_path( aTHX_
             rb_p,
             items - 1,
-            &ST(1)
+            &ST(1),
+            true
         );
 
-        bool cur_rb_is_temp = (rb_p != cur_rb_p);
+        if (NULL == cur_rb_p) {
+            RETVAL = &PL_sv_undef;
+        }
+        else {
+            bool cur_rb_is_temp = (rb_p != cur_rb_p);
 
-        UErrorCode err = U_ZERO_ERROR;
+            UErrorCode err = U_ZERO_ERROR;
 
-        // Gets used by all of the conversions:
-        int32_t i32 = 0;
+            // Gets used by all of the conversions:
+            int32_t i32 = 0;
 
-        UResType type = ures_getType(cur_rb_p);
-        switch (type) {
-            case URES_STRING:
-                ures_getUTF8String(cur_rb_p, NULL, &i32, true, &err);
+            UResType type = ures_getType(cur_rb_p);
+            switch (type) {
+                case URES_STRING:
+                    ures_getUTF8String(cur_rb_p, NULL, &i32, true, &err);
 
-                if (err != U_BUFFER_OVERFLOW_ERROR) {
-                    if (U_FAILURE(err)) {
-                        if (cur_rb_is_temp) ures_close(cur_rb_p);
+                    if (err != U_BUFFER_OVERFLOW_ERROR) {
+                        if (U_FAILURE(err)) {
+                            if (cur_rb_is_temp) ures_close(cur_rb_p);
+                        }
+
+                        _handle_uerr(err, "ures_getUTF8String", NULL);
                     }
 
-                    _handle_uerr(err, "ures_getUTF8String", NULL);
-                }
+                    RETVAL = newSV(i32);
+                    SvPOK_on(RETVAL);
+                    SvCUR_set(RETVAL, i32);
 
-                RETVAL = newSV(i32);
-                SvPOK_on(RETVAL);
-                SvCUR_set(RETVAL, i32);
+                    // In the off chance that the fetch below fails:
+                    sv_2mortal(RETVAL);
 
-                // In the off chance that the fetch below fails:
-                sv_2mortal(RETVAL);
+                    // Perl allocates a trailing NUL for us.
+                    i32++;
 
-                // Perl allocates a trailing NUL for us.
-                i32++;
+                    err = U_ZERO_ERROR;
+                    ures_getUTF8String(cur_rb_p, SvPVX(RETVAL), &i32, true, &err);
 
-                err = U_ZERO_ERROR;
-                ures_getUTF8String(cur_rb_p, SvPVX(RETVAL), &i32, true, &err);
+                    if (U_FAILURE(err)) {
+                        if (cur_rb_is_temp) ures_close(cur_rb_p);
 
-                if (U_FAILURE(err)) {
-                    if (cur_rb_is_temp) ures_close(cur_rb_p);
+                        _handle_uerr(err, "ures_getUTF8String", NULL);
+                    }
 
-                    _handle_uerr(err, "ures_getUTF8String", NULL);
-                }
+                    SvREFCNT_inc(RETVAL);
 
-                SvREFCNT_inc(RETVAL);
+                    break;
 
-                break;
+                case URES_BINARY: {
+                    const uint8_t* buf = ures_getBinary(cur_rb_p, &i32, &err);
 
-            case URES_BINARY: {
-                const uint8_t* buf = ures_getBinary(cur_rb_p, &i32, &err);
+                    if (U_FAILURE(err)) {
+                        if (cur_rb_is_temp) ures_close(cur_rb_p);
 
-                if (U_FAILURE(err)) {
-                    if (cur_rb_is_temp) ures_close(cur_rb_p);
+                        _handle_uerr(err, "ures_getBinary", NULL);
+                    }
 
-                    _handle_uerr(err, "ures_getBinary", NULL);
-                }
+                    RETVAL = newSVpvn( (const char *const) buf, i32);
+                    } break;
 
-                RETVAL = newSVpvn( (const char *const) buf, i32);
-                } break;
+                case URES_INT:
+                    i32 = ures_getInt(cur_rb_p, &err);
 
-            case URES_INT:
-                i32 = ures_getInt(cur_rb_p, &err);
+                    if (U_FAILURE(err)) {
+                        if (cur_rb_is_temp) ures_close(cur_rb_p);
 
-                if (U_FAILURE(err)) {
-                    if (cur_rb_is_temp) ures_close(cur_rb_p);
+                        _handle_uerr(err, "ures_getInt", NULL);
+                    }
 
-                    _handle_uerr(err, "ures_getInt", NULL);
-                }
+                    RETVAL = newSViv(i32);
+                    break;
 
-                RETVAL = newSViv(i32);
-                break;
+                default:
+                    croak("Cannot fetch value of type %d", type);
+            }
 
-            default:
-                croak("Cannot fetch value of type %u", type);
+            if (cur_rb_is_temp) ures_close(cur_rb_p);
         }
-
-        if (cur_rb_is_temp) ures_close(cur_rb_p);
 
     OUTPUT:
         RETVAL
