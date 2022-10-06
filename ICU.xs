@@ -41,6 +41,7 @@ extern "C" {
 #include <unicode/uidna.h>
 #include <unicode/uloc.h>
 #include <unicode/uenum.h>
+#include <unicode/ures.h>
 #include <unicode/ustring.h>
 
 #ifdef UICU_CAN_FORMAT_LISTS
@@ -478,6 +479,54 @@ void __handle_uerr_with_parseError(pTHX_
 
 // ----------------------------------------------------------------------
 
+static UResourceBundle* __resolve_rb_path(pTHX_
+    UResourceBundle* root_rb,
+    UResourceBundle** rbs_to_close,
+    unsigned pathlen,
+    SV** path
+) {
+    dMARK;
+    dAX;
+
+    UErrorCode err = U_ZERO_ERROR;
+
+    UResourceBundle* cur_rb_p = root_rb;
+
+    for (unsigned i=1; i<pathlen; i++) {
+        UResType type = ures_getType(cur_rb_p);
+
+        SV* cur_key_sv = ST(i);
+
+        switch (type) {
+            case URES_TABLE: {
+                const char* given = SvPVbyte_nolen(cur_key_sv);
+                cur_rb_p = ures_getByKey(cur_rb_p, given, NULL, &err);
+                _handle_uerr(err, "ures_getByKey", NULL);
+            } break;
+
+            case URES_ARRAY:
+            case URES_INT_VECTOR: {
+                const int32_t given = (int32_t) SvIV(cur_key_sv);
+                cur_rb_p = ures_getByIndex(cur_rb_p, given, NULL, &err);
+                _handle_uerr(err, "ures_getByIndex", NULL);
+            } break;
+
+            default:
+                for (unsigned ii=1; ii<i; ii++) {
+                    ures_close(rbs_to_close[ii]);
+                }
+
+                croak("Pointer is too deep!");
+        }
+
+        rbs_to_close[i - 1] = cur_rb_p;
+    }
+
+    return cur_rb_p;
+}
+
+// ----------------------------------------------------------------------
+
 #define _define_locale_iv_constsub(name) \
     newCONSTSUB( gv_stashpvs(PERL_NAMESPACE "::Locale", FALSE), #name, newSVuv(ULOC_##name) );
 
@@ -511,6 +560,214 @@ const char*
 get_error_name(I32 errnum)
     CODE:
         RETVAL = u_errorName((UErrorCode) errnum);
+
+    OUTPUT:
+        RETVAL
+
+# ----------------------------------------------------------------------
+
+MODULE = Unicode::ICU    PACKAGE = Unicode::ICU::ResourceBundle
+
+PROTOTYPES: DISABLE
+
+SV*
+new (SV* classname, SV* pkg_name_sv=&PL_sv_undef, SV* locale_sv=&PL_sv_undef)
+    CODE:
+        const char* classname_str = SvPVbyte_nolen(classname);
+
+        const char* pkg_name = SvOK(pkg_name_sv) ? SvPVbyte_nolen(pkg_name_sv) : NULL;
+        const char* locale = SvOK(locale_sv) ? SvPVbyte_nolen(locale_sv) : NULL;
+        UErrorCode err = U_ZERO_ERROR;
+
+        UResourceBundle* rb_p = ures_open(pkg_name, locale, &err);
+        _handle_uerr(err, "ures_open", NULL);
+
+        RETVAL = _to_svuvptr(aTHX_ rb_p, classname_str);
+
+    OUTPUT:
+        RETVAL
+
+void
+DESTROY (SV* self_sv)
+    CODE:
+        _warn_if_global_destruct(self_sv);
+
+        UResourceBundle* rb_p = (UResourceBundle*) _from_svuvptr(aTHX_ self_sv);
+
+        ures_close(rb_p);
+
+void
+get_version (SV* self_sv)
+    PPCODE:
+        UResourceBundle* rb_p = (UResourceBundle*) _from_svuvptr(aTHX_ self_sv);
+        UVersionInfo versionInfo;
+        ures_getVersion(rb_p, versionInfo);
+
+        EXTEND(SP, U_MAX_VERSION_LENGTH);
+        for (unsigned i=0; i<U_MAX_VERSION_LENGTH; i++) {
+            mPUSHu(versionInfo[i]);
+        }
+
+char*
+get_actual_locale (SV* self_sv)
+    ALIAS:
+        get_valid_locale = 1
+    CODE:
+        UResourceBundle* rb_p = (UResourceBundle*) _from_svuvptr(aTHX_ self_sv);
+        UErrorCode err = U_ZERO_ERROR;
+
+        RETVAL = (char*) ures_getLocaleByType(rb_p, ix ? ULOC_VALID_LOCALE : ULOC_ACTUAL_LOCALE, &err);
+
+        _handle_uerr(err, "ures_getLocaleByType", NULL);
+
+    OUTPUT:
+        RETVAL
+
+void
+get_keys (SV* self_sv, ...)
+    PPCODE:
+        UResourceBundle* rb_p = (UResourceBundle*) _from_svuvptr(aTHX_ self_sv);
+
+        UResourceBundle* rbs_to_close[items-1];
+
+        UResourceBundle* cur_rb_p = __resolve_rb_path( aTHX_
+            rb_p,
+            rbs_to_close,
+            items - 1,
+            &ST(1)
+        );
+
+        UErrorCode err = U_ZERO_ERROR;
+
+        if (ures_getType(cur_rb_p) != URES_TABLE) {
+            for (unsigned rbi=1; rbi<items; rbi++) {
+                ures_close(rbs_to_close[rbi-1]);
+            }
+
+            croak("Only tables have keys");
+        }
+
+        ures_resetIterator(cur_rb_p);
+
+        int32_t keys_count = ures_getSize(cur_rb_p);
+        MAKE_VLA_VIA_VECTOR(returns, keys_count, SV*);
+
+        int32_t k = 0;
+
+        while (ures_hasNext(cur_rb_p)) {
+            UResourceBundle* cur = ures_getNextResource(cur_rb_p, NULL, &err);
+
+            if (U_FAILURE(err)) {
+                for (unsigned rbi=1; rbi<items; rbi++) {
+                    ures_close(rbs_to_close[rbi-1]);
+                }
+
+                _handle_uerr(err, "ures_getNextResource", NULL);
+            }
+
+            returns[k++] = newSVpv( ures_getKey(cur), 0 );
+
+            ures_close(cur);
+        }
+
+        for (unsigned rbi=1; rbi<items; rbi++) {
+            ures_close(rbs_to_close[rbi-1]);
+        }
+
+        EXTEND(SP, keys_count);
+
+        for (k=0; k<keys_count; k++) mPUSHs(returns[k]);
+
+SV*
+get (SV* self_sv, ...)
+    CODE:
+        UResourceBundle* rb_p = (UResourceBundle*) _from_svuvptr(aTHX_ self_sv);
+
+        UResourceBundle* rbs_to_close[items-1];
+
+        UResourceBundle* cur_rb_p = __resolve_rb_path( aTHX_
+            rb_p,
+            rbs_to_close,
+            items - 1,
+            &ST(1)
+        );
+
+        UErrorCode err = U_ZERO_ERROR;
+
+        // Gets used by all of the conversions:
+        int32_t i32 = 0;
+
+        UResType type = ures_getType(cur_rb_p);
+    fprintf(stderr, "type=%u\n", type);
+        switch (type) {
+            case URES_STRING:
+                ures_getUTF8String(cur_rb_p, NULL, &i32, true, &err);
+
+                if (err != U_BUFFER_OVERFLOW_ERROR) {
+                    if (U_FAILURE(err)) {
+                        for (unsigned rbi=1; rbi<items; rbi++) {
+                            ures_close(rbs_to_close[rbi-1]);
+                        }
+                    }
+
+                    _handle_uerr(err, "ures_getUTF8String", NULL);
+                }
+
+                RETVAL = newSV(i32);
+                SvPOK_on(RETVAL);
+
+                // In the off chance that the fetch below fails:
+                sv_2mortal(RETVAL);
+
+                ures_getUTF8String(cur_rb_p, SvPVX(RETVAL), &i32, true, &err);
+
+                if (U_FAILURE(err)) {
+                    for (unsigned rbi=1; rbi<items; rbi++) {
+                        ures_close(rbs_to_close[rbi-1]);
+                    }
+
+                    _handle_uerr(err, "ures_getUTF8String", NULL);
+                }
+
+                SvREFCNT_inc(RETVAL);
+
+                break;
+
+            case URES_BINARY: {
+                const uint8_t* buf = ures_getBinary(cur_rb_p, &i32, &err);
+
+                if (U_FAILURE(err)) {
+                    for (unsigned rbi=1; rbi<items; rbi++) {
+                        ures_close(rbs_to_close[rbi-1]);
+                    }
+
+                    _handle_uerr(err, "ures_getBinary", NULL);
+                }
+
+                RETVAL = newSVpvn( (const char *const) buf, i32);
+                } break;
+
+            case URES_INT:
+                i32 = ures_getInt(cur_rb_p, &err);
+
+                if (U_FAILURE(err)) {
+                    for (unsigned rbi=1; rbi<items; rbi++) {
+                        ures_close(rbs_to_close[rbi-1]);
+                    }
+
+                    _handle_uerr(err, "ures_getInt", NULL);
+                }
+
+                RETVAL = newSViv(i32);
+                break;
+
+            default:
+                croak("Cannot fetch value of type %u", type);
+        }
+
+        for (unsigned rbi=1; rbi<items; rbi++) {
+            ures_close(rbs_to_close[rbi-1]);
+        }
 
     OUTPUT:
         RETVAL
