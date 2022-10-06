@@ -85,6 +85,40 @@ typedef struct {
     std::vector<type> vector_##name(size);      \
     type *name = vector_##name.data();
 
+#if 0
+// For introspecting UResourceBundle objects:
+
+typedef uint32_t Resource;
+#define RES_BUFSIZE 64
+struct UResourceBundleImp {
+    const char *fKey; /*tag*/
+    /**
+    * The dataEntry for the actual locale in which this item lives.
+    * Used for accessing the item's data.
+    * Non-const pointer for reference counting via entryIncrease().
+    */
+    void* fData; /*for low-level access*/
+    char *fVersion;
+    /**
+    * The dataEntry for the valid locale.
+    * Used for /LOCALE/path alias resolution that starts back from the vali    d locale,
+    * rather than from the actual locale of this item which might live in
+    * an ancestor bundle.
+    */
+    void *fValidLocaleDataEntry;
+    char *fResPath; /* full path to the resource: "zh_TW/CollationElements/S    equence" */
+    char fResBuf[RES_BUFSIZE];
+    int32_t fResPathLen;
+    Resource fRes;
+    UBool fHasFallback;
+    UBool fIsTopLevel;
+    uint32_t fMagic1;   /* For determining if it's a stack object */
+    uint32_t fMagic2;   /* For determining if it's a stack object */
+    int32_t fIndex;
+    int32_t fSize;
+};
+#endif
+
 /*
  * We do as much as we can here in C, but some of ICU’s functionality
  * is only available from C++. See unicode_icu.cc for those parts.
@@ -492,7 +526,7 @@ static UResourceBundle* __resolve_rb_path(pTHX_
 
     UResourceBundle* cur_rb_p = root_rb;
 
-    for (unsigned i=1; i<pathlen; i++) {
+    for (unsigned i=0; i<pathlen; i++) {
         UResType type = ures_getType(cur_rb_p);
 
         SV* cur_key_sv = ST(i);
@@ -519,7 +553,7 @@ static UResourceBundle* __resolve_rb_path(pTHX_
                 croak("Pointer is too deep!");
         }
 
-        rbs_to_close[i - 1] = cur_rb_p;
+        rbs_to_close[i] = cur_rb_p;
     }
 
     return cur_rb_p;
@@ -628,7 +662,7 @@ get_keys (SV* self_sv, ...)
     PPCODE:
         UResourceBundle* rb_p = (UResourceBundle*) _from_svuvptr(aTHX_ self_sv);
 
-        UResourceBundle* rbs_to_close[items-1];
+        MAKE_VLA_VIA_VECTOR(rbs_to_close, items-1, UResourceBundle*);
 
         UResourceBundle* cur_rb_p = __resolve_rb_path( aTHX_
             rb_p,
@@ -640,7 +674,7 @@ get_keys (SV* self_sv, ...)
         UErrorCode err = U_ZERO_ERROR;
 
         if (ures_getType(cur_rb_p) != URES_TABLE) {
-            for (unsigned rbi=1; rbi<items; rbi++) {
+            for (int rbi=1; rbi<items; rbi++) {
                 ures_close(rbs_to_close[rbi-1]);
             }
 
@@ -652,31 +686,35 @@ get_keys (SV* self_sv, ...)
         int32_t keys_count = ures_getSize(cur_rb_p);
         MAKE_VLA_VIA_VECTOR(returns, keys_count, SV*);
 
-        int32_t k = 0;
+        for (int32_t k = 0; k<keys_count; k++) {
+            UResourceBundle* cur = ures_getByIndex(cur_rb_p, k, NULL, &err);
 
-        while (ures_hasNext(cur_rb_p)) {
-            UResourceBundle* cur = ures_getNextResource(cur_rb_p, NULL, &err);
+            if (err == U_MISSING_RESOURCE_ERROR) {
+                warn("Missing resource; skipping\n");
+                returns[k] = &PL_sv_undef;
+                continue;
+            }
 
             if (U_FAILURE(err)) {
-                for (unsigned rbi=1; rbi<items; rbi++) {
+                for (int rbi=1; rbi<items; rbi++) {
                     ures_close(rbs_to_close[rbi-1]);
                 }
 
-                _handle_uerr(err, "ures_getNextResource", NULL);
+                _handle_uerr(err, "ures_getByIndex", NULL);
             }
 
-            returns[k++] = newSVpv( ures_getKey(cur), 0 );
+            returns[k] = newSVpv( ures_getKey(cur), 0 );
 
             ures_close(cur);
         }
 
-        for (unsigned rbi=1; rbi<items; rbi++) {
+        for (int rbi=1; rbi<items; rbi++) {
             ures_close(rbs_to_close[rbi-1]);
         }
 
         EXTEND(SP, keys_count);
 
-        for (k=0; k<keys_count; k++) mPUSHs(returns[k]);
+        for (int32_t k=0; k<keys_count; k++) mPUSHs(returns[k]);
 
 SV*
 get (SV* self_sv, ...)
@@ -698,14 +736,13 @@ get (SV* self_sv, ...)
         int32_t i32 = 0;
 
         UResType type = ures_getType(cur_rb_p);
-    fprintf(stderr, "type=%u\n", type);
         switch (type) {
             case URES_STRING:
                 ures_getUTF8String(cur_rb_p, NULL, &i32, true, &err);
 
                 if (err != U_BUFFER_OVERFLOW_ERROR) {
                     if (U_FAILURE(err)) {
-                        for (unsigned rbi=1; rbi<items; rbi++) {
+                        for (int rbi=1; rbi<items; rbi++) {
                             ures_close(rbs_to_close[rbi-1]);
                         }
                     }
@@ -722,7 +759,7 @@ get (SV* self_sv, ...)
                 ures_getUTF8String(cur_rb_p, SvPVX(RETVAL), &i32, true, &err);
 
                 if (U_FAILURE(err)) {
-                    for (unsigned rbi=1; rbi<items; rbi++) {
+                    for (int rbi=1; rbi<items; rbi++) {
                         ures_close(rbs_to_close[rbi-1]);
                     }
 
@@ -737,7 +774,7 @@ get (SV* self_sv, ...)
                 const uint8_t* buf = ures_getBinary(cur_rb_p, &i32, &err);
 
                 if (U_FAILURE(err)) {
-                    for (unsigned rbi=1; rbi<items; rbi++) {
+                    for (int rbi=1; rbi<items; rbi++) {
                         ures_close(rbs_to_close[rbi-1]);
                     }
 
@@ -751,7 +788,7 @@ get (SV* self_sv, ...)
                 i32 = ures_getInt(cur_rb_p, &err);
 
                 if (U_FAILURE(err)) {
-                    for (unsigned rbi=1; rbi<items; rbi++) {
+                    for (int rbi=1; rbi<items; rbi++) {
                         ures_close(rbs_to_close[rbi-1]);
                     }
 
@@ -765,7 +802,7 @@ get (SV* self_sv, ...)
                 croak("Cannot fetch value of type %u", type);
         }
 
-        for (unsigned rbi=1; rbi<items; rbi++) {
+        for (int rbi=1; rbi<items; rbi++) {
             ures_close(rbs_to_close[rbi-1]);
         }
 
