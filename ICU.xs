@@ -86,7 +86,7 @@ typedef struct {
     type *name = vector_##name.data();
 
 #if 0
-// For introspecting UResourceBundle objects:
+// Copied from uresimp.h, for introspecting UResourceBundle objects:
 
 typedef uint32_t Resource;
 #define RES_BUFSIZE 64
@@ -515,7 +515,6 @@ void __handle_uerr_with_parseError(pTHX_
 
 static UResourceBundle* __resolve_rb_path(pTHX_
     UResourceBundle* root_rb,
-    UResourceBundle** rbs_to_close,
     unsigned pathlen,
     SV** path
 ) {
@@ -524,39 +523,47 @@ static UResourceBundle* __resolve_rb_path(pTHX_
 
     UErrorCode err = U_ZERO_ERROR;
 
+    UResourceBundle* ret_rb_p = NULL;
+
     UResourceBundle* cur_rb_p = root_rb;
 
     for (unsigned i=0; i<pathlen; i++) {
         UResType type = ures_getType(cur_rb_p);
 
-        SV* cur_key_sv = ST(i);
+        SV* cur_key_sv = path[i];
 
         switch (type) {
             case URES_TABLE: {
                 const char* given = SvPVbyte_nolen(cur_key_sv);
-                cur_rb_p = ures_getByKey(cur_rb_p, given, NULL, &err);
-                _handle_uerr(err, "ures_getByKey", NULL);
+                ret_rb_p = ures_getByKey(cur_rb_p, given, ret_rb_p, &err);
+
+                if (U_FAILURE(err)) {
+                    if (ret_rb_p) ures_close(ret_rb_p);
+                    _handle_uerr(err, "ures_getByKey", NULL);
+                }
             } break;
 
             case URES_ARRAY:
             case URES_INT_VECTOR: {
                 const int32_t given = (int32_t) SvIV(cur_key_sv);
-                cur_rb_p = ures_getByIndex(cur_rb_p, given, NULL, &err);
-                _handle_uerr(err, "ures_getByIndex", NULL);
+                cur_rb_p = ures_getByIndex(cur_rb_p, given, ret_rb_p, &err);
+
+                if (U_FAILURE(err)) {
+                    if (ret_rb_p) ures_close(ret_rb_p);
+                    _handle_uerr(err, "ures_getByIndex", NULL);
+                }
             } break;
 
             default:
-                for (unsigned ii=1; ii<i; ii++) {
-                    ures_close(rbs_to_close[ii]);
-                }
+                if (ret_rb_p) ures_close(ret_rb_p);
 
-                croak("Pointer is too deep!");
+                croak("Pointer is too deep! (last type=%d)", type);
         }
-
-        rbs_to_close[i] = cur_rb_p;
     }
 
-    return cur_rb_p;
+    if (NULL == ret_rb_p) ret_rb_p = root_rb;
+
+    return ret_rb_p;
 }
 
 // ----------------------------------------------------------------------
@@ -662,23 +669,20 @@ get_keys (SV* self_sv, ...)
     PPCODE:
         UResourceBundle* rb_p = (UResourceBundle*) _from_svuvptr(aTHX_ self_sv);
 
-        MAKE_VLA_VIA_VECTOR(rbs_to_close, items-1, UResourceBundle*);
-
         UResourceBundle* cur_rb_p = __resolve_rb_path( aTHX_
             rb_p,
-            rbs_to_close,
             items - 1,
             &ST(1)
         );
 
+        bool cur_rb_is_temp = (rb_p != cur_rb_p);
+
         UErrorCode err = U_ZERO_ERROR;
 
         if (ures_getType(cur_rb_p) != URES_TABLE) {
-            for (int rbi=1; rbi<items; rbi++) {
-                ures_close(rbs_to_close[rbi-1]);
-            }
+            if (cur_rb_is_temp) ures_close(cur_rb_p);
 
-            croak("Only tables have keys");
+            croak("Only tables have keys (ptr=%p, type=%d)", cur_rb_p, ures_getType(cur_rb_p));
         }
 
         ures_resetIterator(cur_rb_p);
@@ -689,16 +693,8 @@ get_keys (SV* self_sv, ...)
         for (int32_t k = 0; k<keys_count; k++) {
             UResourceBundle* cur = ures_getByIndex(cur_rb_p, k, NULL, &err);
 
-            if (err == U_MISSING_RESOURCE_ERROR) {
-                warn("Missing resource; skipping\n");
-                returns[k] = &PL_sv_undef;
-                continue;
-            }
-
             if (U_FAILURE(err)) {
-                for (int rbi=1; rbi<items; rbi++) {
-                    ures_close(rbs_to_close[rbi-1]);
-                }
+                if (cur_rb_is_temp) ures_close(cur_rb_p);
 
                 _handle_uerr(err, "ures_getByIndex", NULL);
             }
@@ -708,9 +704,7 @@ get_keys (SV* self_sv, ...)
             ures_close(cur);
         }
 
-        for (int rbi=1; rbi<items; rbi++) {
-            ures_close(rbs_to_close[rbi-1]);
-        }
+        if (cur_rb_is_temp) ures_close(cur_rb_p);
 
         EXTEND(SP, keys_count);
 
@@ -721,14 +715,13 @@ get (SV* self_sv, ...)
     CODE:
         UResourceBundle* rb_p = (UResourceBundle*) _from_svuvptr(aTHX_ self_sv);
 
-        UResourceBundle* rbs_to_close[items-1];
-
         UResourceBundle* cur_rb_p = __resolve_rb_path( aTHX_
             rb_p,
-            rbs_to_close,
             items - 1,
             &ST(1)
         );
+
+        bool cur_rb_is_temp = (rb_p != cur_rb_p);
 
         UErrorCode err = U_ZERO_ERROR;
 
@@ -742,9 +735,7 @@ get (SV* self_sv, ...)
 
                 if (err != U_BUFFER_OVERFLOW_ERROR) {
                     if (U_FAILURE(err)) {
-                        for (int rbi=1; rbi<items; rbi++) {
-                            ures_close(rbs_to_close[rbi-1]);
-                        }
+                        if (cur_rb_is_temp) ures_close(cur_rb_p);
                     }
 
                     _handle_uerr(err, "ures_getUTF8String", NULL);
@@ -752,16 +743,19 @@ get (SV* self_sv, ...)
 
                 RETVAL = newSV(i32);
                 SvPOK_on(RETVAL);
+                SvCUR_set(RETVAL, i32);
 
                 // In the off chance that the fetch below fails:
                 sv_2mortal(RETVAL);
 
+                // Perl allocates a trailing NUL for us.
+                i32++;
+
+                err = U_ZERO_ERROR;
                 ures_getUTF8String(cur_rb_p, SvPVX(RETVAL), &i32, true, &err);
 
                 if (U_FAILURE(err)) {
-                    for (int rbi=1; rbi<items; rbi++) {
-                        ures_close(rbs_to_close[rbi-1]);
-                    }
+                    if (cur_rb_is_temp) ures_close(cur_rb_p);
 
                     _handle_uerr(err, "ures_getUTF8String", NULL);
                 }
@@ -774,9 +768,7 @@ get (SV* self_sv, ...)
                 const uint8_t* buf = ures_getBinary(cur_rb_p, &i32, &err);
 
                 if (U_FAILURE(err)) {
-                    for (int rbi=1; rbi<items; rbi++) {
-                        ures_close(rbs_to_close[rbi-1]);
-                    }
+                    if (cur_rb_is_temp) ures_close(cur_rb_p);
 
                     _handle_uerr(err, "ures_getBinary", NULL);
                 }
@@ -788,9 +780,7 @@ get (SV* self_sv, ...)
                 i32 = ures_getInt(cur_rb_p, &err);
 
                 if (U_FAILURE(err)) {
-                    for (int rbi=1; rbi<items; rbi++) {
-                        ures_close(rbs_to_close[rbi-1]);
-                    }
+                    if (cur_rb_is_temp) ures_close(cur_rb_p);
 
                     _handle_uerr(err, "ures_getInt", NULL);
                 }
@@ -802,9 +792,7 @@ get (SV* self_sv, ...)
                 croak("Cannot fetch value of type %u", type);
         }
 
-        for (int rbi=1; rbi<items; rbi++) {
-            ures_close(rbs_to_close[rbi-1]);
-        }
+        if (cur_rb_is_temp) ures_close(cur_rb_p);
 
     OUTPUT:
         RETVAL
